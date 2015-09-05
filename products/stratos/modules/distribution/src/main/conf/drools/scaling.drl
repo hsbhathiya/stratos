@@ -35,10 +35,14 @@ import org.apache.stratos.autoscaler.algorithms.PartitionAlgorithm;
 import org.apache.stratos.autoscaler.algorithms.partition.OneAfterAnother;
 import org.apache.stratos.autoscaler.algorithms.partition.RoundRobin;
 import org.apache.stratos.autoscaler.context.partition.ClusterLevelPartitionContext;
-import org.apache.stratos.autoscaler.rule.AutoscalerRuleEvaluator;
+import org.apache.stratos.cloud.controller.stub.domain.NetworkPartition
+import java.sql.Time
+import java.util.Calendar.rule.AutoscalerRuleEvaluator;
 import org.apache.stratos.cloud.controller.stub.domain.Partition;
 import org.apache.stratos.cloud.controller.stub.domain.MemberContext;
 import org.apache.stratos.autoscaler.context.cluster.ClusterInstanceContext;
+import org.apache.stratos.cloud.controller.context.CloudControllerContext;
+import org.apache.stratos.cloud.controller.domain.InstanceContext;
 
 import org.apache.stratos.autoscaler.pojo.policy.autoscale.LoadAverage
 import org.apache.stratos.autoscaler.pojo.policy.autoscale.MemoryConsumption
@@ -55,12 +59,14 @@ global java.lang.Boolean isPrimary;
 global java.util.List primaryMembers;
 global java.lang.Boolean arspiReset;
 global java.lang.String algorithmName;
+global java.lang.String deploymentPolicyId;
 
 rule "Scaling Rule"
 dialect "mvel"
 	when
-       clusterInstanceContext : ClusterInstanceContext ()
-
+        clusterInstanceContext : ClusterInstanceContext ()
+        cloudControllerContext : CloudControllerContext()
+        instanceContex : InstanceContext()
         loadThresholds : LoadThresholds() from  autoscalePolicy.getLoadThresholds()
         partitionAlgorithm : PartitionAlgorithm() from  delegator.getPartitionAlgorithm(algorithmName)
 
@@ -247,8 +253,26 @@ dialect "mvel"
 
 
                             for(MemberStatsContext memberStatsContext: partitionContext.getMemberStatsContexts().values()){
+                                 // Smart Killing for aws users.Teminate instaces only if  the instance is used for more than 40 mins after billning
+                                   /* TODO move teo seperate class
+                                   * boolean ProviderSpecificTesting (String provder, memberStatContext){
+                                   *
+                                   * }
+                                   *
+                                   * */
+                                 boolean isEligible = true;
+                                 NetworkPartition networkPartition = cloudControllerContext.getNetworkPartition(clusterInstanceContext.getNetworkPartitionId());
+                                 long initTime = instanceContext.getInitTime();
+                                 if("ec2".equals(networkPartition.getProvider())){
 
-                                if( !primaryMembers.contains(memberStatsContext.getMemberId()) ) {
+                                     long minimumBillingTimeInMilis = 60*60*1000;
+                                     long minimumUsageTimeinMilis = 40*60*1000;
+                                     long totalUsageTimeInMillis = Calendar.getInstance().getTimeInMillis() - initTime;
+                                     long usageAfterBilling  = totalUsageTimeInMillis % minimumBillingTimeInMilis;
+                                     isEligible  = usageAfterBilling > minimumUsageTimeinMilis;
+                                 }
+
+                                if( !primaryMembers.contains(memberStatsContext.getMemberId()) && isEligible) {
 
                                 LoadAverage loadAverage = memberStatsContext.getLoadAverage();
                                 log.debug("[scale-down] " + " [cluster] "
@@ -282,7 +306,6 @@ dialect "mvel"
                                     selectedMemberStatsContext = memberStatsContext;
                                     lowestOverallLoad = overallLoad;
                                 }
-
 
                               }
 
